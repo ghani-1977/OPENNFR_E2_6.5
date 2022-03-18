@@ -40,7 +40,7 @@ struct eventData
 {
 	uint8_t rawEITdata[10];
 	uint8_t n_crc;
-	uint8_t type;
+	uint16_t type;
 	uint32_t *crc_list;
 	static DescriptorMap descriptors;
 	static uint8_t data[];
@@ -104,7 +104,7 @@ static uint32_t calculate_crc_hash(const uint8_t *data, int size)
 }
 
 eventData::eventData(const eit_event_struct* e, int size, int _type, int tsidonid)
-	:n_crc(0), type(_type & 0xFF), crc_list(NULL)
+	:n_crc(0), type(_type & 0xFFFF), crc_list(NULL)
 {
 	if (!e)
 		return; /* Used when loading from file */
@@ -922,7 +922,7 @@ void eEPGCache::load()
 		}
 		char text1[13];
 		ret = fread( text1, 13, 1, f);
-		if ( !memcmp( text1, "ENIGMA_EPG_V7", 13) )
+		if ( !memcmp( text1, "ENIGMA_EPG_V8", 13) )
 		{
 			singleLock s(cache_lock);
 			if (eventDB.size() > 0)
@@ -951,9 +951,9 @@ void eEPGCache::load()
 				while(size--)
 				{
 					uint8_t len=0;
-					uint8_t type=0;
+					uint16_t type=0;
 					eventData *event=0;
-					ret = fread( &type, sizeof(uint8_t), 1, f);
+					ret = fread( &type, sizeof(uint16_t), 1, f);
 					ret = fread( &len, sizeof(uint8_t), 1, f);
 					event = new eventData(0, len, type);
 					event->n_crc = (len-10) / sizeof(uint32_t);
@@ -1137,7 +1137,7 @@ void eEPGCache::save()
 		int cnt=0;
 		unsigned int magic = EPG_MAGIC;
 		fwrite(&magic, sizeof(int), 1, f);
-		const char *text = "UNFINISHED_V7";
+		const char *text = "UNFINISHED_V8";
 		fwrite( text, 13, 1, f );
 		int size = eventDB.size();
 		fwrite( &size, sizeof(int), 1, f );
@@ -1150,7 +1150,7 @@ void eEPGCache::save()
 			for (timeMap::iterator time_it(timemap.begin()); time_it != timemap.end(); ++time_it)
 			{
 				uint8_t len = time_it->second->n_crc * sizeof(uint32_t) + 10;
-				fwrite( &time_it->second->type, sizeof(uint8_t), 1, f );
+				fwrite( &time_it->second->type, sizeof(uint16_t), 1, f );
 				fwrite( &len, sizeof(uint8_t), 1, f);
 				fwrite( time_it->second->rawEITdata, 10, 1, f);
 				fwrite( time_it->second->crc_list, sizeof(uint32_t), time_it->second->n_crc, f);
@@ -1191,7 +1191,7 @@ void eEPGCache::save()
 		// has been written to disk.
 		fsync(fileno(f));
 		fseek(f, sizeof(int), SEEK_SET);
-		fwrite("ENIGMA_EPG_V7", 13, 1, f);
+		fwrite("ENIGMA_EPG_V8", 13, 1, f);
 		fclose(f);
 	}
 }
@@ -1887,19 +1887,20 @@ skip_entry:
 
 static void fill_eit_start(eit_event_struct *evt, time_t t)
 {
-    tm *time = gmtime(&t);
+	tm time;
+	gmtime_r( &t, &time );
 
     int l = 0;
-    int month = time->tm_mon + 1;
+    int month = time.tm_mon + 1;
     if (month == 1 || month == 2)
         l = 1;
-    int mjd = 14956 + time->tm_mday + (int)((time->tm_year - l) * 365.25) + (int)((month + 1 + l*12) * 30.6001);
+    int mjd = 14956 + time.tm_mday + (int)((time.tm_year - l) * 365.25) + (int)((month + 1 + l*12) * 30.6001);
     evt->start_time_1 = mjd >> 8;
     evt->start_time_2 = mjd & 0xFF;
 
-    evt->start_time_3 = toBCD(time->tm_hour);
-    evt->start_time_4 = toBCD(time->tm_min);
-    evt->start_time_5 = toBCD(time->tm_sec);
+    evt->start_time_3 = toBCD(time.tm_hour);
+    evt->start_time_4 = toBCD(time.tm_min);
+    evt->start_time_5 = toBCD(time.tm_sec);
 
 }
 
@@ -2394,8 +2395,9 @@ void eEPGCache::importEvents(ePyObject serviceReferences, ePyObject list)
 //     0 = search for similar broadcastings (SIMILAR_BROADCASTINGS_SEARCH)
 //     1 = search events with exactly title name (EXACT_TITLE_SEARCH)
 //     2 = search events with text in title name (PARTIAL_TITLE_SEARCH)
-//     3 = search events with text in description name (PARTIAL_DESCRIPTION_SEARCH)
-//     4 = search events starting with title name (START_TITLE_SEARCH)
+//     3 = search events starting with title name (START_TITLE_SEARCH)
+//     4 = search events ending with title name (END_TITLE_SEARCH)
+//     5 = search events with text in description (PARTIAL_DESCRIPTION_SEARCH)
 //  when type is 0 (SIMILAR_BROADCASTINGS_SEARCH)
 //   the fourth is the servicereference string
 //   the fifth is the eventid
@@ -2412,18 +2414,13 @@ const char* eEPGCache::casetypestr(int value)
 	{
 		case CASE_CHECK:
 			return "case sensitive";
-			break;
 		case NO_CASE_CHECK:
 			return "case insensitive";
-			break;
 		case REGEX_CHECK:
 			return "regex";
-			break;
 		default:
 			return "unknown";
-			break;
 	}
-	return "unknown";
 }
 
 
@@ -2546,7 +2543,7 @@ PyObject *eEPGCache::search(ePyObject arg)
 					return NULL;
 				}
 			}
-			else if (tuplesize > 4 && ((querytype == EXAKT_TITLE_SEARCH) || (querytype==START_TITLE_SEARCH) || (querytype==PARTIAL_TITLE_SEARCH)))
+			else if (tuplesize > 4 && ((querytype == EXAKT_TITLE_SEARCH) || (querytype==START_TITLE_SEARCH)  || (querytype==END_TITLE_SEARCH) || (querytype==PARTIAL_TITLE_SEARCH)))
 			{
 				ePyObject obj = PyTuple_GET_ITEM(arg, 3);
 				if (PyString_Check(obj))
@@ -2571,8 +2568,14 @@ PyObject *eEPGCache::search(ePyObject arg)
 						case PARTIAL_TITLE_SEARCH:
 							eDebug("[eEPGCache] lookup events with '%s' in title (%s)", str, ctype);
 							break;
-						case PARTIAL_DESCRIPTION_SEARCH:
+						case START_TITLE_SEARCH:
 							eDebug("[eEPGCache] lookup events, title starting with '%s' (%s)", str, ctype);
+							break;
+						case END_TITLE_SEARCH:
+							eDebug("[eEPGCache] lookup events, title ending with '%s' (%s)", str, ctype);
+							break;
+						case PARTIAL_DESCRIPTION_SEARCH:
+							eDebug("[eEPGCache] lookup events with '%s' in the description (%s)", str, ctype);
 							break;
 					}
 					Py_BEGIN_ALLOW_THREADS; /* No Python code in this section, so other threads can run */
@@ -2609,6 +2612,13 @@ PyObject *eEPGCache::search(ePyObject arg)
 									/* Do a "startswith" match by pretending the text isn't that long */
 									title_len = textlen;
 								}
+								else if (querytype == END_TITLE_SEARCH)
+								{
+									/* Do a "endswith" match by pretending the text isn't that long */
+									titleptr = titleptr + title_len - textlen;
+									title_len = textlen;
+								}
+
 								if (casetype == NO_CASE_CHECK)
 								{
 									while (title_len >= textlen)
@@ -3334,12 +3344,13 @@ void eEPGCache::crossepgImportEPGv21(std::string dbroot)
 			data_eit_event->event_id_hi = title.event_id >> 8;
 			data_eit_event->event_id_lo = title.event_id & 0xff;
 
-			tm *time = gmtime(&title.start_time);
+			tm time;
+			gmtime_r(&title.start_time,&time);
 			data_eit_event->start_time_1 = title.mjd >> 8;
 			data_eit_event->start_time_2 = title.mjd & 0xFF;
-			data_eit_event->start_time_3 = toBCD(time->tm_hour);
-			data_eit_event->start_time_4 = toBCD(time->tm_min);
-			data_eit_event->start_time_5 = toBCD(time->tm_sec);
+			data_eit_event->start_time_3 = toBCD(time.tm_hour);
+			data_eit_event->start_time_4 = toBCD(time.tm_min);
+			data_eit_event->start_time_5 = toBCD(time.tm_sec);
 
 			data_eit_event->duration_1 = toBCD(title.length / 3600);
 			data_eit_event->duration_2 = toBCD((title.length % 3600) / 60);

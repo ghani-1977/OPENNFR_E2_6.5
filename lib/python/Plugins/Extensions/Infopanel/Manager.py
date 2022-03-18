@@ -77,6 +77,7 @@ class NFRCamManager(Screen):
 		Softcam.checkconfigdir()
 		self.actcam = config.NFRSoftcam.actcam.value
 		self.camstartcmd = ""
+		self.vpncheck()
 		self.createinfo()
 		self.Timer = eTimer()
 		self.Timer.callback.append(self.listecminfo)
@@ -134,14 +135,6 @@ class NFRCamManager(Screen):
 			for fAdd1 in glob ('/etc/init.d/softcam.*'):
 				if not "None" in fAdd1:
 					emus.append(fAdd1)
-				#searchfile1 = open(fAdd1, "r")
-				#for line1 in searchfile1:
-					#if 'echo "/usr/bin/' in line1:
-						#line2 = line1[15:]
-						#line3 = line2.split(" ")
-						#line4 = line3[0]
-						#emus.append(line4)
-				#searchfile1.close()
 	
 			try:
 				for emu in emus:
@@ -190,23 +183,31 @@ class NFRCamManager(Screen):
 			self.iface = 'wlan1'
 		self.Console.ePopen("ethtool " +  self.iface + " | grep Link ", self.Stage1Complete)
 
-
+	def vpncheck(self):
+		from Screens.NetworkSetup import NetworkOpenvpn
+		try:
+			global response			
+			response = urlopen('http://ip-api.com/csv/?fields=countryCode,city,query',timeout=5.0).read().decode('utf-8')
+			print("your public IP: %s" % response)
+		except urllib.error.URLError as e:
+			print("Url Error: %r" % e)
+			
 	def Stage1Complete(self, result, retval, extra_args=None):
 		result = result
-		if "Link detected: yes"  in result:
-			from Screens.NetworkSetup import NetworkOpenvpn
-			ext_ip = six.ensure_text(urlopen('http://ip-api.com/csv/?fields=countryCode,city,query').read())
-			if isinstance(ext_ip, six.text_type):
-				ext_ip = six.ensure_str(ext_ip.encode('utf8'))
-				print(ext_ip)
-				self.AboutText1 = "Online: " + (ext_ip)
+		try:		
+			if "Link detected: yes" in result:
+				print("public IP:", response)
+				self.AboutText1 = "Online: " + (response)
+				if os.system("ls /var/run/openvpn.*.pid 2> /dev/null") == False:
+					self.AboutText2 = _("openVPN is running ")
+				else:
+					self.AboutText2 = _("no openVPN found")
 			else:
 				self.AboutText1 = "Offline"
-			if os.system("ls /var/run/openvpn.*.pid 2> /dev/null") == False:
-				self.AboutText2 = "openVPN is running "
-			else:
-				self.AboutText2 = "no openVPN found" 
-			listecm = ""
+		except:
+			self.AboutText2 = _("Link not detected")                         		
+		listecm = ""
+
 		try:
 			ecmfiles = open("/tmp/ecm.info", "r")
 			for line in ecmfiles:
